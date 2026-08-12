@@ -1,0 +1,125 @@
+{
+  "name": "Librada · Auto-factura (portal)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "librada-ticket",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "WhatsApp: ticket entrante",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "librada-ticket"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "x-api-key", "value": "={{$env.ANTHROPIC_API_KEY}}" },
+          { "name": "anthropic-version", "value": "2023-06-01" },
+          { "name": "content-type", "value": "application/json" }
+        ]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 700,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": [\n      {\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"{{$json.ticket_base64}}\"}},\n      {\"type\":\"text\",\"text\":\"Extrae de este ticket y responde SOLO JSON: {comercio, rfc_emisor, monto, fecha, ticket_id, folio, sucursal, url_portal, correo_factura, metodo}. metodo = 'portal' si trae URL de facturacion, 'correo' si pide mandar correo, 'no_aplica' si es pago de gobierno/tesoreria.\"}\n    ]\n  }]\n}",
+        "options": {}
+      },
+      "id": "node-ocr",
+      "name": "Claude: leer ticket (OCR)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// parsear el JSON que devolvio Claude + inyectar receptor del cliente\nconst txt = $json.content?.[0]?.text || '{}';\nconst t = JSON.parse(txt.match(/\\{[\\s\\S]*\\}/)?.[0] || '{}');\n// receptor: en produccion viene de datos_fiscales del cliente (o tabla Supabase)\nt.receptor = { rfc:'AACO710113KG7', nombre:'OMAR ANTONIO ARVAYO CASTRO', cp:'11550', regimen:'612', uso_cfdi:'G03' };\nreturn [{ json: t }];"
+      },
+      "id": "node-parse",
+      "name": "Preparar ticket + receptor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "rules": { "values": [
+          { "conditions": { "options": {}, "conditions": [ { "leftValue": "={{$json.metodo}}", "rightValue": "portal", "operator": { "type": "string", "operation": "equals" } } ] }, "outputKey": "portal" },
+          { "conditions": { "options": {}, "conditions": [ { "leftValue": "={{$json.metodo}}", "rightValue": "correo", "operator": { "type": "string", "operation": "equals" } } ] }, "outputKey": "correo" }
+        ] },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "node-switch",
+      "name": "Switch: método",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1060, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.FACTURADOR_URL}}/facturar",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{$json.url_portal}}\",\n  \"ticket\": { \"ticket_id\": \"{{$json.ticket_id}}\", \"folio\": \"{{$json.folio}}\", \"monto\": \"{{$json.monto}}\", \"fecha\": \"{{$json.fecha}}\", \"rfc_emisor\": \"{{$json.rfc_emisor}}\" },\n  \"receptor\": {{JSON.stringify($json.receptor)}}\n}",
+        "options": {}
+      },
+      "id": "node-facturador",
+      "name": "Facturador: portal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "hola@librada.mx",
+        "toEmail": "={{$json.correo_factura}}",
+        "subject": "=Solicitud de factura — {{$json.comercio}} ${{$json.monto}} ({{$json.fecha}})",
+        "emailFormat": "text",
+        "text": "=Solicito la factura del consumo adjunto.\\nFecha: {{$json.fecha}} · Total: {{$json.monto}}\\nRFC receptor: {{$json.receptor.rfc}}\\nNombre: {{$json.receptor.nombre}}\\nCP: {{$json.receptor.cp}} · Régimen: {{$json.receptor.regimen}} · Uso CFDI: {{$json.receptor.uso_cfdi}}\\nFavor de enviar PDF y XML. Gracias.",
+        "options": {}
+      },
+      "id": "node-correo",
+      "name": "Correo: solicitar factura",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1320, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/librada_cfdi",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [
+          { "name": "apikey", "value": "={{$env.SUPABASE_KEY}}" },
+          { "name": "Authorization", "value": "=Bearer {{$env.SUPABASE_KEY}}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"cliente\": \"omar\", \"uuid\": \"{{$json.uuid}}\", \"rfc_emisor\": \"{{$('Preparar ticket + receptor').item.json.rfc_emisor}}\",\n  \"monto\": \"{{$('Preparar ticket + receptor').item.json.monto}}\", \"fecha\": \"{{$('Preparar ticket + receptor').item.json.fecha}}\", \"estatus\": \"con_factura\"\n}",
+        "options": {}
+      },
+      "id": "node-supabase",
+      "name": "Supabase: guarda CFDI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 200]
+    }
+  ],
+  "connections": {
+    "WhatsApp: ticket entrante": { "main": [[{ "node": "Claude: leer ticket (OCR)", "type": "main", "index": 0 }]] },
+    "Claude: leer ticket (OCR)": { "main": [[{ "node": "Preparar ticket + receptor", "type": "main", "index": 0 }]] },
+    "Preparar ticket + receptor": { "main": [[{ "node": "Switch: método", "type": "main", "index": 0 }]] },
+    "Switch: método": { "main": [
+      [{ "node": "Facturador: portal", "type": "main", "index": 0 }],
+      [{ "node": "Correo: solicitar factura", "type": "main", "index": 0 }]
+    ] },
+    "Facturador: portal": { "main": [[{ "node": "Supabase: guarda CFDI", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

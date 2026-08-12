@@ -1,0 +1,14 @@
+{
+  "name": "librada-facturador",
+  "version": "0.1.0",
+  "description": "Microservicio de auto-facturación por portal (adapters por plataforma). Reutilizable multi-cliente.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "postinstall": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright": "^1.47.0"
+  }
+}
