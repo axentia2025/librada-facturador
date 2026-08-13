@@ -1,39 +1,82 @@
 // Librada · Facturador — microservicio de auto-facturación por portal.
 // n8n le manda el ticket + datos del receptor; él corre el adapter de la plataforma y
 // devuelve el CFDI (uuid, pdf, xml). Reutilizable para TODOS los clientes (sólo cambia el receptor).
+//
+// AUTO-CONSTRUCCIÓN (el diferenciador): cada facturación consulta y actualiza la MEMORIA
+// compartida (Supabase · librada_facturacion_portales). Portales conocidos → adapter afinado;
+// portales nuevos → el adapter genérico lo INTENTA y se aprende para el siguiente cliente.
 const express = require('express');
 const { chromium } = require('playwright');
-const { pickAdapter, pickByHost } = require('./adapters');
+const { pickByHost, adapterByName, generico } = require('./adapters');
+const registry = require('./registry');
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 // POST /facturar
-// body: { url, ticket:{ticket_id|folio, sucursal?, terminal?, transaccion?, monto, fecha, rfc_emisor},
-//         receptor:{rfc, nombre, cp, regimen, uso_cfdi} }
+// body: { url, ticket:{ticket_id|folio|referencia, sucursal?, monto, fecha, rfc_emisor, comercio?},
+//         receptor:{rfc, nombre, cp, regimen, uso_cfdi, email} }
 app.post('/facturar', async (req, res) => {
   const { url, ticket, receptor } = req.body || {};
   if (!url || !ticket || !receptor)
     return res.status(400).json({ ok: false, error: 'faltan url, ticket o receptor' });
 
+  const comercio = ticket.comercio || null;
   const browser = await chromium.launch({ headless: true });
+  let finalHost = '';
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(30000);
-    // Navegamos primero: muchos comercios tienen una URL vanidosa que REDIRIGE a una plataforma
-    // compartida (ej. giornale.mx → cfdi40.mifacturacion.mx). Elegimos el adapter por el host FINAL.
+
+    // Navegamos primero para RESOLVER redirects (muchos comercios tienen URL vanidosa que
+    // redirige a una plataforma compartida, ej. giornale.mx → cfdi40.mifacturacion.mx).
     await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    let finalHost = ''; try { finalHost = new URL(page.url()).hostname.toLowerCase(); } catch {}
-    const adapter = pickByHost(finalHost) || pickAdapter(url);
-    if (!adapter) {
-      return res.status(422).json({ ok: false, error: 'plataforma no soportada aún', dominio: finalHost });
-    }
-    const result = await adapter.facturar(page, { url, ticket, receptor }); // {uuid, pdf, xml} o {needs_manual}
+    try { finalHost = new URL(page.url()).hostname.toLowerCase(); } catch {}
+
+    // ── Consultar la MEMORIA: ¿ya sabemos facturar en este host? ──
+    const memoria = await registry.lookupPortal(finalHost);
+
+    // Elegir cómo facturar:
+    //  1) memoria dice adapter de código → úsalo   2) hay adapter que matchea host → úsalo
+    //  3) desconocido → adapter GENÉRICO (lo intenta y lo aprendemos)
+    let adapter = null;
+    if (memoria && memoria.tipo === 'adapter' && memoria.adapter) adapter = adapterByName(memoria.adapter);
+    if (!adapter) adapter = pickByHost(finalHost);
+    const esNuevo = !adapter;
+    if (!adapter) adapter = generico;
+
+    const result = await adapter.facturar(page, { url, ticket, receptor });
     const ok = !(result && result.needs_manual);
-    return res.json({ ok, plataforma: adapter.nombre, ...result });
+
+    // ── APRENDER: registrar el resultado en la memoria (crea el host si es nuevo) ──
+    await registry.registrar({
+      host: finalHost, ok, comercio,
+      plataforma: memoria?.plataforma || (esNuevo ? undefined : adapter.nombre),
+      error: ok ? null : (result?.motivo || result?.error || 'no_se_genero'),
+      form_schema: result?.form_schema || null,
+    });
+    // Si el genérico resolvió un portal nuevo al 100%, guarda su receta (queda 'aprendido').
+    if (ok && esNuevo && result?.receta) {
+      await registry.guardarReceta(finalHost, { receta: result.receta, plataforma: comercio || undefined });
+    }
+
+    if (!ok) {
+      // No pudo: Librada se disculpa con el cliente y escala un RESUMEN a servicio@ (n8n lo maneja).
+      return res.json({
+        ok: false, plataforma: adapter.nombre, dominio: finalHost, comercio,
+        needs_manual: true, motivo: result?.motivo || result?.error || 'no_se_genero',
+        aprendido: esNuevo, // portal nuevo capturado en memoria para que tú y Omar lo afinen
+        mensaje_cliente: 'Estoy tramitando tu factura; este comercio tiene un portal que aún estoy '
+          + 'aprendiendo. Lo dejo resuelto en las próximas horas y te aviso en cuanto esté lista.',
+      });
+    }
+    return res.json({ ok: true, plataforma: adapter.nombre, dominio: finalHost, ...result });
   } catch (e) {
-    // Si algo falla (captcha, selector, portal caído) → se marca para intervención manual.
-    return res.json({ ok: false, error: String(e.message || e), needs_manual: true });
+    await registry.registrar({ host: finalHost, ok: false, comercio: (ticket && ticket.comercio) || null, error: String(e.message || e) });
+    return res.json({
+      ok: false, dominio: finalHost, needs_manual: true, error: String(e.message || e),
+      mensaje_cliente: 'Tuve un problema al generar tu factura. La dejo resuelta en las próximas horas y te aviso.',
+    });
   } finally {
     await browser.close();
   }

@@ -5,9 +5,15 @@
 const fAmbit = require('./f-ambit');
 const mifacturacion = require('./mifacturacion');
 const chedraui = require('./chedraui');
+const generico = require('./generico'); // intento para portales NUEVOS (no va en ADAPTERS: no matchea por host)
 // const laComer = require('./lacomer');
 
 const ADAPTERS = [fAmbit, mifacturacion, chedraui /*, laComer */];
+
+// Busca un adapter de código por su `nombre` (lo que guarda la memoria en la columna `adapter`).
+function adapterByName(name) {
+  return ADAPTERS.find(a => a.nombre === name) || null;
+}
 
 function pickAdapter(url) {
   let host = '';
@@ -29,4 +35,4 @@ function pickForTicket({ url, comercio, rfc_emisor } = {}) {
     && a.matchesComercio({ comercio, rfc_emisor })) || null;
 }
 
-module.exports = { pickAdapter, pickByHost, pickForTicket, ADAPTERS };
+module.exports = { pickAdapter, pickByHost, pickForTicket, adapterByName, generico, ADAPTERS };
