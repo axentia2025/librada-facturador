@@ -22,6 +22,11 @@ app.post('/facturar', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'faltan url, ticket o receptor' });
 
   const comercio = ticket.comercio || null;
+  // La visión suele extraer la URL sin protocolo (ej. "www3.cesco.com.mx/facturacion").
+  // Playwright exige http(s):// → lo anteponemos.
+  let target = String(url || '').trim();
+  if (target && !/^https?:\/\//i.test(target)) target = 'https://' + target;
+
   const browser = await chromium.launch({ headless: true });
   let finalHost = '';
   try {
@@ -30,7 +35,7 @@ app.post('/facturar', async (req, res) => {
 
     // Navegamos primero para RESOLVER redirects (muchos comercios tienen URL vanidosa que
     // redirige a una plataforma compartida, ej. giornale.mx → cfdi40.mifacturacion.mx).
-    await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => {});
     try { finalHost = new URL(page.url()).hostname.toLowerCase(); } catch {}
 
     // ── Consultar la MEMORIA: ¿ya sabemos facturar en este host? ──
@@ -45,7 +50,7 @@ app.post('/facturar', async (req, res) => {
     const esNuevo = !adapter;
     if (!adapter) adapter = generico;
 
-    const result = await adapter.facturar(page, { url, ticket, receptor });
+    const result = await adapter.facturar(page, { url: target, ticket, receptor });
     const ok = !(result && result.needs_manual);
 
     // ── APRENDER: registrar el resultado en la memoria (crea el host si es nuevo) ──
