@@ -18,7 +18,11 @@ function matches(host) {
 }
 
 async function facturar(page, { url, ticket, receptor }) {
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  // server.js ya navegó (para resolver redirects y elegir adapter por host final).
+  // Sólo navegamos si por alguna razón no estamos ya en el portal.
+  if (!/f-ambit/i.test(page.url())) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+  }
 
   // Por si algún f-ambit trajera reCAPTCHA (los mapeados NO tienen) → intervención/servicio.
   if (await page.$('iframe[src*="recaptcha"], .g-recaptcha')) {
