@@ -29,8 +29,7 @@ async function facturar(page, { url, ticket, receptor }) {
   await setVal(page, '#monto', String(ticket.monto ?? ''));
   await setVal(page, '#rfc', String(receptor.rfc || ''));
   await clickBtn(page, 'Continuar');
-  await page.waitForLoadState('networkidle').catch(() => {});
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(3000); // Costco es pesado; no usamos networkidle (nunca se calma)
   await dismiss(page);
 
   // ¿Error en el paso 1? (ticket/monto no coincide, ya facturado, etc.)
@@ -57,8 +56,7 @@ async function facturar(page, { url, ticket, receptor }) {
 
   // ── GENERAR ──
   const gen = (await clickBtn(page, 'Generar')) || (await clickBtn(page, 'Facturar')) || (await clickBtn(page, 'Continuar'));
-  await page.waitForLoadState('networkidle').catch(() => {});
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(4000); // sin networkidle (Costco no se calma)
   await dismiss(page);
 
   // ── RESULTADO ──
