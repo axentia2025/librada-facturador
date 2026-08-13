@@ -4,11 +4,10 @@
   "description": "Microservicio de auto-facturación por portal (adapters por plataforma). Reutilizable multi-cliente.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "npx playwright install chromium"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "playwright": "^1.47.0"
+    "playwright": "1.47.0"
   }
 }

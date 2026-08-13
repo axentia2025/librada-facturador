@@ -6,7 +6,9 @@
 // compartida (Supabase · librada_facturacion_portales). Portales conocidos → adapter afinado;
 // portales nuevos → el adapter genérico lo INTENTA y se aprende para el siguiente cliente.
 const express = require('express');
-const { chromium } = require('playwright');
+// Playwright se carga de forma PEREZOSA dentro de /facturar (no al arrancar).
+// Así el servidor HTTP siempre levanta y responde /health aunque Playwright/Chromium
+// tuvieran un problema de carga (evita que un require nativo tumbe el contenedor sin logs).
 const { pickByHost, adapterByName, generico } = require('./adapters');
 const registry = require('./registry');
 
@@ -27,6 +29,7 @@ app.post('/facturar', async (req, res) => {
   let target = String(url || '').trim();
   if (target && !/^https?:\/\//i.test(target)) target = 'https://' + target;
 
+  const { chromium } = require('playwright'); // lazy: solo cuando de verdad vamos a facturar
   const browser = await chromium.launch({ headless: true });
   let finalHost = '';
   try {
