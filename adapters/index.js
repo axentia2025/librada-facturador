@@ -5,10 +5,11 @@
 const fAmbit = require('./f-ambit');
 const mifacturacion = require('./mifacturacion');
 const chedraui = require('./chedraui');
+const costco = require('./costco');
 const generico = require('./generico'); // intento para portales NUEVOS (no va en ADAPTERS: no matchea por host)
 // const laComer = require('./lacomer');
 
-const ADAPTERS = [fAmbit, mifacturacion, chedraui /*, laComer */];
+const ADAPTERS = [fAmbit, mifacturacion, chedraui, costco /*, laComer */];
 
 // Busca un adapter de código por su `nombre` (lo que guarda la memoria en la columna `adapter`).
 function adapterByName(name) {

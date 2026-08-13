@@ -30,10 +30,27 @@ app.post('/facturar', async (req, res) => {
   if (target && !/^https?:\/\//i.test(target)) target = 'https://' + target;
 
   const { chromium } = require('playwright'); // lazy: solo cuando de verdad vamos a facturar
-  const browser = await chromium.launch({ headless: true });
+  // MODO SIGILO: algunos portales (Costco y otros grandes retailers) no renderizan el formulario
+  // si detectan un navegador automatizado. Lanzamos con args + user-agent reales y ocultamos
+  // las señales típicas de automatización (navigator.webdriver, etc.).
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'],
+  });
   let finalHost = '';
   try {
-    const page = await browser.newPage();
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1366, height: 768 },
+      locale: 'es-MX',
+      timezoneId: 'America/Mexico_City',
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'languages', { get: () => ['es-MX', 'es'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    });
+    const page = await context.newPage();
     page.setDefaultTimeout(30000);
 
     // Navegamos primero para RESOLVER redirects (muchos comercios tienen URL vanidosa que
