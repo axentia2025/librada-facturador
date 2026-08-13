@@ -26,6 +26,15 @@ async function facturar(page, { url, ticket, receptor }) {
     await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
   }
   await page.waitForLoadState('domcontentloaded').catch(() => {});
+  // Muchos portales (ej. Costco) renderizan el formulario con JavaScript UNOS SEGUNDOS DESPUÉS.
+  // Esperamos a que aparezca un campo de texto real (o a que la red se calme) antes de mirar/llenar,
+  // si no capturaríamos 0 campos. Damos un respiro extra para que termine de pintar.
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForSelector(
+    'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea',
+    { timeout: 15000 }
+  ).catch(() => {});
+  await page.waitForTimeout(1500);
 
   // Si hay captcha de imagen, el orquestador lo resuelve con el servicio (2Captcha).
   // (reCAPTCHA v2/invisible aún no se auto-resuelve → se marca para revisión.)
