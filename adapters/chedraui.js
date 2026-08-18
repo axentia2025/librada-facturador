@@ -35,7 +35,9 @@ async function facturar(page, { url, ticket, receptor }) {
   const rfc = String(receptor.rfc || '').toUpperCase().replace(/\s+/g, '');
   await setVal(page, '#txtRFC', rfc.slice(0, Math.max(0, rfc.length - 3)));
   await setVal(page, '#txtHomoCve', rfc.slice(-3));
-  await setVal(page, '#txtNumTicket', String(ticket.ticket_id || ticket.folio || ticket.referencia || ''));
+  // Núm. de ticket: Chedraui lo imprime en grupos (ej. "2608 1407 2201 3811 0003") pero el
+  // campo es numérico → quitamos espacios.
+  await setVal(page, '#txtNumTicket', String(ticket.ticket_id || ticket.folio || ticket.referencia || '').replace(/\s+/g, ''));
 
   // Captcha de imagen → 2Captcha
   try {
