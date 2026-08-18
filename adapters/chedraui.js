@@ -20,8 +20,11 @@ function matches(host) {
 }
 
 async function facturar(page, { url, ticket, receptor }) {
-  if (!/chedraui|masfacturaweb/i.test(page.url())) {
-    await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  // La visión a veces extrae la URL sin "/facturacion" (aterriza en la TIENDA, no en el portal).
+  // Como ya sabemos que es Chedraui, forzamos el portal correcto (Masteredi/masfacturaweb).
+  const PORTAL = 'https://www.masfacturaweb.com.mx/chedraui/chedraui_mfw.aspx';
+  if (!/masfacturaweb\.com\.mx\/chedraui/i.test(page.url())) {
+    await page.goto(PORTAL, { waitUntil: 'domcontentloaded' }).catch(() => {});
   }
   await page.waitForTimeout(1500);
   await clickSiExiste(page, '#btnClose');                 // modal "Estimado cliente… Aceptar"
