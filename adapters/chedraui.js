@@ -138,9 +138,10 @@ async function huboExito(page) {
   return /(Descargar|Factura generada|comprobante generado|se gener[oó]|Folio Fiscal|UUID|\.xml|\.pdf)/i.test(html);
 }
 async function textoError(page) {
-  const html = (await page.content().catch(() => '')) || '';
-  const m = html.match(/(no (existe|se encontr[oó])[^<.]{0,90}|ticket[^<.]{0,40}(inv[aá]lido|no v[aá]lido|no existe)[^<.]{0,40}|ya (fue|est[aá]) facturad[oa][^<.]{0,60}|c[oó]digo[^<.]{0,30}incorrecto[^<.]{0,30}|captcha[^<.]{0,30}|RFC[^<.]{0,30}(inv[aá]lido|incorrecto)[^<.]{0,30})/i);
-  return m ? m[1].replace(/\s+/g, ' ').trim() : null;
+  // TEXTO VISIBLE (no HTML crudo) para no confundir markup con errores reales.
+  const t = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+  const m = t.match(/(no (existe|se encontr[oó])[^\n.]{0,80}|ticket[^\n.]{0,40}(inv[aá]lido|no v[aá]lido|no existe)[^\n.]{0,40}|ya (fue|est[aá]) facturad[oa][^\n.]{0,60}|c[oó]digo[^\n.]{0,20}(incorrecto|inv[aá]lido|no coincide)[^\n.]{0,20}|captcha[^\n.]{0,25}(incorrecto|inv[aá]lido|no coincide)[^\n.]{0,25}|RFC[^\n.]{0,25}(inv[aá]lido|incorrecto|no coincide)[^\n.]{0,25})/i);
+  return m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : null;
 }
 async function uuidDePagina(page) {
   const html = (await page.content().catch(() => '')) || '';
@@ -151,8 +152,9 @@ async function snap(page) {
   try {
     return await page.evaluate(() => ({
       titulo: document.title, url: location.href,
-      campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id, name: e.name })).slice(0, 25),
-      botones: Array.from(document.querySelectorAll('input[type=submit],input[type=button],button,a')).map(b => (b.value || b.innerText || '').trim()).filter(Boolean).slice(0, 20),
+      texto: ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 800),
+      campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id, name: e.name })).slice(0, 30),
+      botones: Array.from(document.querySelectorAll('input[type=image],input[type=submit],input[type=button],button,a[id]')).map(b => ({ id: b.id, txt: (b.value || b.alt || b.innerText || '').trim().slice(0, 20) })).filter(b => b.id || b.txt).slice(0, 20),
     }));
   } catch { return null; }
 }
