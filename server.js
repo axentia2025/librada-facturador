@@ -33,9 +33,15 @@ app.post('/facturar', async (req, res) => {
   // MODO SIGILO: algunos portales (Costco y otros grandes retailers) no renderizan el formulario
   // si detectan un navegador automatizado. Lanzamos con args + user-agent reales y ocultamos
   // las señales típicas de automatización (navigator.webdriver, etc.).
+  // MODO CON-PANTALLA (headed) sobre pantalla virtual (xvfb, ver Dockerfile CMD).
+  // Portales legacy (ASP.NET tipo Chedraui/Masteredi) se comportan distinto en headless
+  // y no completan el paso final de generación; con una pantalla real (aunque sea virtual)
+  // se comportan como en un Chrome normal, que es donde SÍ generan. Además reduce
+  // la detección de automatización en retailers grandes.
   const browser = await chromium.launch({
-    headless: true,
-    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'],
+    headless: false,
+    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage',
+           '--start-maximized', '--disable-gpu'],
   });
   let finalHost = '';
   try {
