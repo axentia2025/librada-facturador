@@ -13,12 +13,16 @@
 
 const nombre = 'generico';
 
-// Palabras clave por campo (es-MX). Se prueban contra label+placeholder+name+id.
+// Palabras clave por campo (es-MX). Se prueban contra label+placeholder+name+id
+// (incluye ids camelCase tipo txtRFC/txtAmount e ids español tipo razon_social/codigo_postal).
+// El ORDEN importa: se asigna la primera clave que casa.
 const CLAVES = {
-  rfc:        [/\brfc\b/i, /r\.f\.c/i, /registro federal/i],
-  referencia: [/referen/i, /folio/i, /ticket/i, /transacc/i, /web ?id/i, /n[uú]mero de (nota|ticket|factura)/i, /consecutivo/i],
-  total:      [/total/i, /monto/i, /importe/i, /\$\s*$/],
+  rfc:        [/rfc/i, /r\.f\.c/i, /registro federal/i],
+  cp:         [/c[oó]digo\s*postal/i, /codigo_?postal/i, /\bcp\b/i, /zip/i],
+  referencia: [/referen/i, /folio/i, /ticket/i, /transacc/i, /web ?id/i, /consecutivo/i, /\borden\b/i, /n[uú]mero de (nota|ticket|factura|orden)/i],
+  total:      [/total/i, /monto/i, /importe/i, /amount/i, /pagad/i],
   correo:     [/correo/i, /e-?mail/i, /@/],
+  nombre:     [/raz[oó]n/i, /denominaci/i, /nombre/i, /txtname/i],
 };
 
 async function facturar(page, { url, ticket, receptor }) {
@@ -48,32 +52,26 @@ async function facturar(page, { url, ticket, receptor }) {
     referencia: String(ticket.referencia || ticket.ticket_id || ticket.folio || ''),
     total: String(ticket.monto ?? ''),
     correo: String(receptor.email || ''),
+    nombre: String(receptor.nombre || ''),
+    cp: String(receptor.cp || ''),
   };
 
-  // ── 1) Llenar los campos de texto que reconozcamos ──
-  const rellenados = {};
-  const campos = await page.$$('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=submit]):not([type=button]), textarea');
-  for (const el of campos) {
-    const meta = await fieldMeta(el);
-    const clave = clasificar(meta);
-    if (clave && valores[clave] && !rellenados[clave]) {
-      await el.fill(valores[clave]).catch(() => {});
-      rellenados[clave] = true;
-    }
-  }
-
-  // ── 2) Uso CFDI = G03 (select, radio o label) ──
+  // ── 1) Llenar campos + selects (régimen/uso) reconocidos por id/name/label ──
+  await llenarCampos(page, valores);
+  await elegirSelectPorId(page, /regimen|regime/i, receptor.regimen || '612');
+  await elegirSelectPorId(page, /uso/i, receptor.uso_cfdi || 'G03');
   await elegirUsoCFDI(page, receptor.uso_cfdi || 'G03');
 
-  // ── 3) Avanzar por los botones típicos, en orden, hasta llegar a un resultado ──
-  const secuencia = ['Buscar', 'Continuar', 'Siguiente', 'Facturar', 'Generar', 'Aceptar'];
+  // ── 2) Avanzar por los botones típicos; tras CADA paso, re-llenar lo que se revele ──
+  //     (muchos portales son wizard: paso 1 ticket → paso 2 receptor → Enviar/Generar)
+  const secuencia = ['Buscar', 'Continuar', 'Siguiente', 'Facturar', 'Generar', 'Enviar', 'Aceptar'];
   for (const nombreBtn of secuencia) {
     const hecho = await clickBtn(page, nombreBtn);
     if (hecho) {
-      await page.waitForLoadState('networkidle').catch(() => {});
-      await page.waitForTimeout(600);
-      // ¿el portal pidió más datos que ya tenemos? re-llenamos correo/G03 en la 2ª pantalla
-      await rellenarCorreoSiFalta(page, valores.correo);
+      await page.waitForTimeout(1200);
+      await llenarCampos(page, valores);
+      await elegirSelectPorId(page, /regimen|regime/i, receptor.regimen || '612');
+      await elegirSelectPorId(page, /uso/i, receptor.uso_cfdi || 'G03');
       await elegirUsoCFDI(page, receptor.uso_cfdi || 'G03');
       if (await hayError(page)) break;
       if (await huboExito(page)) break;
@@ -120,6 +118,41 @@ async function captureForm(page) {
 }
 
 // ───────── helpers ─────────
+// Llena todos los inputs/textarea reconocidos (una vez por clave). 'nombre' y 'cp' solo si
+// están vacíos (para no pisar el autollenado que muchos portales hacen a partir del RFC).
+async function llenarCampos(page, valores) {
+  const done = {};
+  const soloSiVacio = new Set(['nombre', 'cp']);
+  const campos = await page.$$('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=submit]):not([type=button]), textarea');
+  for (const el of campos) {
+    const clave = clasificar(await fieldMeta(el));
+    if (!clave || !valores[clave] || done[clave]) continue;
+    if (soloSiVacio.has(clave)) {
+      const cur = await el.inputValue().catch(() => '');
+      if (cur && cur.trim()) { done[clave] = true; continue; }
+    }
+    await el.fill(valores[clave]).catch(() => {});
+    done[clave] = true;
+  }
+}
+// Selecciona en un <select> cuyo id/name/label casa `idRegex`, la opción por value o cuyo
+// texto empiece con el código (ej. '612 - Personas Físicas...', 'G03 - Gastos en general').
+async function elegirSelectPorId(page, idRegex, valor) {
+  const v = String(valor || '');
+  for (const sel of await page.$$('select')) {
+    if (!idRegex.test(await fieldMeta(sel))) continue;
+    try {
+      const ok = await sel.evaluate((s, val) => {
+        const o = Array.from(s.options).find((o) =>
+          o.value === val || o.text.trim().toUpperCase().startsWith(String(val).toUpperCase()));
+        if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+        return false;
+      }, v);
+      if (ok) return true;
+    } catch {}
+  }
+  return false;
+}
 async function fieldMeta(el) {
   const [name, id, ph, aria] = await Promise.all([
     el.getAttribute('name').catch(() => ''), el.getAttribute('id').catch(() => ''),
