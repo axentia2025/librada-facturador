@@ -30,10 +30,9 @@ async function facturar(page, { url, ticket, receptor }) {
     await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
   }
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  // Muchos portales (ej. Costco) renderizan el formulario con JavaScript UNOS SEGUNDOS DESPUÉS.
-  // Esperamos a que aparezca un campo de texto real (o a que la red se calme) antes de mirar/llenar,
-  // si no capturaríamos 0 campos. Damos un respiro extra para que termine de pintar.
-  await page.waitForLoadState('networkidle').catch(() => {});
+  // Muchos portales renderizan el formulario con JavaScript UNOS SEGUNDOS DESPUÉS.
+  // Esperamos a que APAREZCA un campo real (no usamos networkidle: en páginas pesadas
+  // con ads/tracking nunca se calma y colgaría la petición — lección de Costco/Grupo MyT).
   await page.waitForSelector(
     'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea',
     { timeout: 15000 }
