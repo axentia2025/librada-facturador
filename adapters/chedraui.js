@@ -48,11 +48,15 @@ async function facturar(page, { url, ticket, receptor }) {
     return { needs_manual: true, motivo: 'captcha_no_resuelto: ' + (e.message || e), form_schema: await snap(page) };
   }
 
-  // "Continuar" del paso 1 es el ImageButton #imgSiguiente
+  // "Continuar" del paso 1 es el ImageButton #imgSiguiente (postback ASP.NET → navega).
   if (!(await clickSiExiste(page, '#imgSiguiente'))) await clickPorTexto(page, 'Continuar');
-  await page.waitForTimeout(3500);
+  // Esperar a que la navegación del postback termine ANTES de inspeccionar (si no, el contexto
+  // se destruye a media evaluate). Reintentamos el snapshot si el contexto se cayó.
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(4000);
   await dismiss(page);
-  const paso2 = await snap(page);   // estado LIMPIO del paso 2 (antes de intentar generar)
+  let paso2 = await snap(page);
+  if (!paso2 || !paso2.titulo) { await page.waitForTimeout(3000); paso2 = await snap(page); }  // reintento
   const dlg1 = page._lastDialog;    // ¿alert tras Continuar? (ej. "ticket no existe")
 
   // ¿Error del portal en el paso 1? (ticket no existe, ya facturado, captcha mal, RFC inválido)
