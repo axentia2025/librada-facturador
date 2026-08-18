@@ -52,6 +52,8 @@ async function facturar(page, { url, ticket, receptor }) {
   if (!(await clickSiExiste(page, '#imgSiguiente'))) await clickPorTexto(page, 'Continuar');
   await page.waitForTimeout(3500);
   await dismiss(page);
+  const paso2 = await snap(page);   // estado LIMPIO del paso 2 (antes de intentar generar)
+  const dlg1 = page._lastDialog;    // ¿alert tras Continuar? (ej. "ticket no existe")
 
   // ¿Error del portal en el paso 1? (ticket no existe, ya facturado, captcha mal, RFC inválido)
   const err1 = await textoError(page);
@@ -79,12 +81,14 @@ async function facturar(page, { url, ticket, receptor }) {
   await page.waitForTimeout(4000);
   await dismiss(page);
 
-  if (await huboExito(page)) {
-    return { uuid: await uuidDePagina(page), nota: 'CFDI generado en Chedraui (Masteredi); normalmente también llega por correo.' };
+  const urlFinal = safeUrl(page);
+  if (await huboExito(page) || /\.pdf($|\?)/i.test(urlFinal)) {
+    return { uuid: await uuidDePagina(page), url_final: urlFinal, nota: 'CFDI generado en Chedraui (Masteredi); normalmente también llega por correo.' };
   }
-  const err2 = page._lastDialog || await textoError(page);
-  return { needs_manual: true, motivo: err2 || 'no_se_genero', form_schema: await snap(page) };
+  const err2 = page._lastDialog || dlg1 || await textoError(page);
+  return { needs_manual: true, motivo: err2 || 'no_se_genero', url_final: urlFinal, dlg1, paso2, form_schema: await snap(page) };
 }
+function safeUrl(page) { try { return page.url(); } catch { return ''; } }
 
 // ───────── helpers ─────────
 async function setVal(page, sel, val) {
