@@ -26,7 +26,8 @@ async function facturar(page, { url, ticket, receptor }) {
   if (!/masfacturaweb\.com\.mx\/chedraui/i.test(page.url())) {
     await page.goto(PORTAL, { waitUntil: 'domcontentloaded' }).catch(() => {});
   }
-  await page.waitForTimeout(1500);
+  // Esperar a que el portal esté listo (menú/modal presentes) antes de tocar nada.
+  await page.waitForSelector('#imbCrearFactura, #btnClose', { timeout: 15000 }).catch(() => {});
   await clickSiExiste(page, '#btnClose');                 // modal "Estimado cliente… Aceptar"
   await page.waitForTimeout(600);
   // "Crear Factura" es un ImageButton de ASP.NET (#imbCrearFactura) → postback que muestra el form.
@@ -96,35 +97,40 @@ async function facturar(page, { url, ticket, receptor }) {
   return { needs_manual: true, motivo: err2 || 'no_se_genero', form_schema: await snap(page) };
 }
 function safeUrl(page) { try { return page.url(); } catch { return ''; } }
+// TODOS los helpers usan page.evaluate (JS directo por selector) para NO retener element handles:
+// los postbacks de ASP.NET navegan y un handle viejo truena ("adopt element handle from a different document").
 async function elegirSelectVal(page, sel, val) {
-  const el = await page.$(sel); if (!el) return false;
   try {
-    return await el.evaluate((s, v) => {
-      const o = Array.from(s.options).find(o => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
-      if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; } return false;
-    }, String(val));
+    return await page.evaluate(([s, v]) => {
+      const el = document.querySelector(s); if (!el) return false;
+      const o = Array.from(el.options).find(o => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
+      if (o) { el.value = o.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true; } return false;
+    }, [sel, String(val)]);
   } catch { return false; }
 }
-
 // ───────── helpers ─────────
 async function setVal(page, sel, val) {
-  const el = await page.$(sel); if (!el) return false;
-  try { await el.fill(String(val)); return true; } catch { return false; }
+  try {
+    return await page.evaluate(([s, v]) => {
+      const e = document.querySelector(s); if (!e) return false;
+      e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); return true;
+    }, [sel, String(val)]);
+  } catch { return false; }
 }
 async function setValSiVacio(page, sel, val) {
   if (!val) return;
-  for (const el of await page.$$(sel)) {
-    const cur = await el.inputValue().catch(() => '');
-    if (!cur || !cur.trim()) { await el.fill(String(val)).catch(() => {}); }
-  }
+  try {
+    await page.evaluate(([s, v]) => {
+      document.querySelectorAll(s).forEach(e => { if (!e.value || !e.value.trim()) { e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); } });
+    }, [sel, String(val)]);
+  } catch {}
 }
 async function clickSiExiste(page, sel) {
-  const el = await page.$(sel); if (!el) return false;
-  try { await el.click({ timeout: 4000 }); return true; } catch {}
-  // Respaldo: click por JS (ignora overlays/actionability — necesario para ImageButtons ASP.NET
-  // que quedan tapados por el modal, y para disparar el postback de forma confiable).
-  try { await el.evaluate((e) => e.click()); return true; } catch {}
-  return false;
+  // Click por JS directo: dispara el postback sin retener handle (robusto a navegación) y sin
+  // problemas de overlay/actionability (los ImageButtons quedan tapados por el modal).
+  try {
+    return await page.evaluate((s) => { const e = document.querySelector(s); if (e) { e.click(); return true; } return false; }, sel);
+  } catch { return false; }
 }
 async function clickPorTexto(page, txt) {
   try {
@@ -136,23 +142,29 @@ async function clickPorTexto(page, txt) {
   return false;
 }
 async function elegirSelect(page, idRegex, valor) {
-  for (const sel of await page.$$('select')) {
-    const meta = ((await sel.getAttribute('id')) || '') + ' ' + ((await sel.getAttribute('name')) || '');
-    if (!idRegex.test(meta)) continue;
-    try {
-      const ok = await sel.evaluate((s, v) => {
-        const o = Array.from(s.options).find((o) => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
-        if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; } return false;
-      }, String(valor));
-      if (ok) return true;
-    } catch {}
-  }
-  return false;
+  try {
+    return await page.evaluate(([re, v]) => {
+      const rx = new RegExp(re, 'i');
+      for (const s of document.querySelectorAll('select')) {
+        if (!rx.test((s.id || '') + ' ' + (s.name || ''))) continue;
+        const o = Array.from(s.options).find(o => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
+        if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      }
+      return false;
+    }, [idRegex.source, String(valor)]);
+  } catch { return false; }
 }
 async function dismiss(page) {
   for (let i = 0; i < 4; i++) {
-    const ok = await page.$('#btnClose, button:has-text("Aceptar"), input[value="Aceptar"], button:has-text("Cerrar")');
-    if (!ok) break; try { await ok.click({ timeout: 3000 }); } catch {} await page.waitForTimeout(300);
+    let clicked = false;
+    try {
+      clicked = await page.evaluate(() => {
+        const b = document.querySelector('#btnClose') ||
+          Array.from(document.querySelectorAll('button,input[type=button],input[type=submit]')).find(e => /^(aceptar|cerrar|ok)$/i.test((e.value || e.innerText || '').trim()));
+        if (b) { b.click(); return true; } return false;
+      });
+    } catch {}
+    if (!clicked) break; await page.waitForTimeout(300);
   }
 }
 async function huboExito(page) {
