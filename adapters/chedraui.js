@@ -25,7 +25,9 @@ async function facturar(page, { url, ticket, receptor }) {
   }
   await page.waitForTimeout(1500);
   await clickSiExiste(page, '#btnClose');                 // modal "Estimado cliente… Aceptar"
-  await clickPorTexto(page, 'Crear Factura');             // abre el formulario
+  await page.waitForTimeout(600);
+  // "Crear Factura" es un ImageButton de ASP.NET (#imbCrearFactura) → postback que muestra el form.
+  if (!(await clickSiExiste(page, '#imbCrearFactura'))) await clickPorTexto(page, 'Crear Factura');
   const hayForm = await page.waitForSelector('#txtRFC', { timeout: 20000 }).then(() => true).catch(() => false);
   if (!hayForm) return { needs_manual: true, motivo: 'chedraui_sin_form', form_schema: await snap(page) };
 
@@ -44,7 +46,8 @@ async function facturar(page, { url, ticket, receptor }) {
     return { needs_manual: true, motivo: 'captcha_no_resuelto: ' + (e.message || e), form_schema: await snap(page) };
   }
 
-  await clickPorTexto(page, 'Continuar');
+  // "Continuar" del paso 1 es el ImageButton #imgSiguiente
+  if (!(await clickSiExiste(page, '#imgSiguiente'))) await clickPorTexto(page, 'Continuar');
   await page.waitForTimeout(3500);
   await dismiss(page);
 
@@ -61,8 +64,17 @@ async function facturar(page, { url, ticket, receptor }) {
   await elegirSelect(page, /regim/i, receptor.regimen || '612');
   await dismiss(page);
 
-  await (clickPorTexto(page, 'Generar') || clickPorTexto(page, 'Facturar') || clickPorTexto(page, 'Continuar') || clickPorTexto(page, 'Enviar'));
-  await page.waitForTimeout(3500);
+  // Generar/timbrar el paso 2 — ImageButtons de ASP.NET (ids probables) + respaldo por texto
+  let genClick = false;
+  for (const id of ['#imgFacturar', '#imgGenerar', '#imgTimbrar', '#imgFinalizar', '#imgSiguiente', '#imgEnviar', '#imgContinuar']) {
+    if (await clickSiExiste(page, id)) { genClick = true; break; }
+  }
+  if (!genClick) {
+    for (const t of ['Generar', 'Facturar', 'Timbrar', 'Finalizar', 'Continuar', 'Enviar']) {
+      if (await clickPorTexto(page, t)) { genClick = true; break; }
+    }
+  }
+  await page.waitForTimeout(4000);
   await dismiss(page);
 
   if (await huboExito(page)) {
