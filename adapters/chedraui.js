@@ -1,112 +1,144 @@
-// Adapter · CHEDRAUI  (portal masfacturaweb.com.mx/chedraui — PAC Masteredi)
-// Plataforma de facturación de Grupo Comercial Chedraui (Súper Chedraui, Selecto, etc.).
+// Adapter · CHEDRAUI  (plataforma Masteredi / masfacturaweb.com.mx)
+// El ticket trae www.chedraui.com.mx/facturacion → redirige a
+// masfacturaweb.com.mx/chedraui/chedraui_mfw.aspx (ASP.NET, PAC Masteredi).
+// Mapeado en vivo (18 ago 2026). Tiene CAPTCHA DE IMAGEN (no reCAPTCHA) → 2Captcha lo resuelve.
 //
-// A diferencia de F-Ambit, el ticket de Chedraui NO trae URL de facturación: el portal es FIJO
-// y se identifica al comercio por el RFC emisor (TCH850701RM1) o comercio="Chedraui".
-// Selectores CONFIRMADOS contra el portal real (ago 2026).
+// Flujo:
+//  Bienvenida: modal "Aceptar" (#btnClose) → botón "Crear Factura"
+//  Paso 1: #txtRFC (10) + #txtHomoCve (3) · #txtNumTicket · captcha #imgCaptcha→#txtCodigo → "Continuar"
+//  Paso 2: (autollena receptor por RFC) correo + Uso CFDI + "Generar/Facturar" → descarga/CFDI por correo
 //
-// ⚠️ CAPTCHA: el paso 1 termina en un código de seguridad (imagen Registro/captcha.aspx, 6 chars).
-//    NO se resuelve aquí. Opciones de producto: (a) mandar la imagen del captcha al cliente por
-//    WhatsApp para que lo teclee (semi-automático), o (b) integrar un servicio anti-captcha con
-//    licencia. Sin captcha resuelto, el flujo se detiene y regresa needs_manual con la imagen.
+// Nota: masfacturaweb aloja a VARIOS comercios con el mismo layout; por eso matcheamos también
+// el host de la plataforma (un solo adapter podría cubrir otros comercios de Masteredi).
+
+const { solveCaptcha } = require('../captcha-solver');
 
 const nombre = 'chedraui';
-const PORTAL = 'https://www.masfacturaweb.com.mx/chedraui/';
 
 function matches(host) {
-  return host.includes('masfacturaweb.com.mx');
-}
-// Enrutamiento por comercio (el ticket no trae URL): úsalo en el router para mandar Chedraui aquí.
-function matchesComercio({ comercio = '', rfc_emisor = '' } = {}) {
-  return /chedraui/i.test(comercio) || /^TCH850701/i.test(rfc_emisor);
+  return host.includes('chedraui') || host.includes('masfacturaweb');
 }
 
-async function facturar(page, { ticket, receptor, captcha, tipoVenta }) {
-  await page.goto(PORTAL, { waitUntil: 'domcontentloaded' });
+async function facturar(page, { url, ticket, receptor }) {
+  if (!/chedraui|masfacturaweb/i.test(page.url())) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  }
+  await page.waitForTimeout(1500);
+  await clickSiExiste(page, '#btnClose');                 // modal "Estimado cliente… Aceptar"
+  await clickPorTexto(page, 'Crear Factura');             // abre el formulario
+  const hayForm = await page.waitForSelector('#txtRFC', { timeout: 20000 }).then(() => true).catch(() => false);
+  if (!hayForm) return { needs_manual: true, motivo: 'chedraui_sin_form', form_schema: await snap(page) };
 
-  // 0) Cerrar el aviso de bienvenida si aparece
-  await clickIfPresent(page, '#btnClose');
-
-  // 1) Entrar a "Crear Factura" (image button ASP.NET)
-  await page.click('#imbCrearFactura');
-  await page.waitForSelector('#txtRFC', { timeout: 15000 });
-
-  // 2) Paso 1 — RFC (base + homoclave) y número de ticket (19 díg., arriba del código de barras)
+  // ── PASO 1 ── RFC dividido (últimos 3 = homoclave), ticket, captcha
   const rfc = String(receptor.rfc || '').toUpperCase().replace(/\s+/g, '');
-  await page.fill('#txtRFC', rfc.slice(0, rfc.length - 3)); // base (10 física / 9 moral)
-  await page.fill('#txtHomoCve', rfc.slice(-3));            // homoclave (3)
-  await page.fill('#txtNumTicket', String(ticket.ticket_id || ticket.folio || '').replace(/\s+/g, ''));
-  // chkIne (complemento INE) queda sin marcar.
+  await setVal(page, '#txtRFC', rfc.slice(0, Math.max(0, rfc.length - 3)));
+  await setVal(page, '#txtHomoCve', rfc.slice(-3));
+  await setVal(page, '#txtNumTicket', String(ticket.ticket_id || ticket.folio || ticket.referencia || ''));
 
-  // 3) Captcha (6 chars). Si no viene resuelto -> intervención (mandar imagen al cliente / anti-captcha).
-  if (!captcha) {
-    const img = await captchaImage(page); // base64 png para enviar al cliente
-    return { ok: false, needs_manual: true, motivo: 'captcha_requerido', captcha_img: img,
-             estado: { rfc: rfc, ticket: ticket.ticket_id }, portal: PORTAL };
+  // Captcha de imagen → 2Captcha
+  try {
+    const buf = await page.locator('#imgCaptcha').screenshot();
+    const code = await solveCaptcha(buf.toString('base64'));
+    await setVal(page, '#txtCodigo', String(code || '').trim());
+  } catch (e) {
+    return { needs_manual: true, motivo: 'captcha_no_resuelto: ' + (e.message || e), form_schema: await snap(page) };
   }
-  await page.fill('#txtCodigo', String(captcha));
-  await page.click('#imgSiguiente');                 // valida captcha -> Paso 2 (datos cliente)
-  await page.waitForSelector('#txtNombre, #imgAlta', { timeout: 20000 });
 
-  // 4) Paso 2 — "Modificación de Datos del Cliente". Si el cliente ya facturó antes, Chedraui los
-  //    trae PRE-LLENADOS; si no (primera vez), se completan desde `receptor`.
-  if (!(await inputVal(page, '#txtNombre'))) {
-    await fillIf(page, '#txtNombre', receptor.nombre);
-    await fillIf(page, '#txtCalle', receptor.calle);
-    await fillIf(page, '#txtExterior', receptor.no_ext);
-    await fillIf(page, '#txtInterior', receptor.no_int);
-    await fillIf(page, '#txtColonia', receptor.colonia);
-    await fillIf(page, '#txtLocalidad', receptor.localidad);
-    await fillIf(page, '#txtDelMunicipio', receptor.municipio);
-    await fillIf(page, '#txtCodigoPostal', receptor.cp);
-    await selectIf(page, '#DdlRegimen', receptor.regimen);        // 612
-    await fillIf(page, '#txtEmail', receptor.correo);
-    await fillIf(page, '#txtEmail2', receptor.correo);
+  await clickPorTexto(page, 'Continuar');
+  await page.waitForTimeout(3500);
+  await dismiss(page);
+
+  // ¿Error del portal en el paso 1? (ticket no existe, ya facturado, captcha mal, RFC inválido)
+  const err1 = await textoError(page);
+  if (err1 && !/correo|e-?mail/i.test(err1)) {
+    return { needs_manual: true, motivo: err1, form_schema: await snap(page) };
   }
-  await page.click('#imgAlta');                      // Continuar -> Paso final (detalle CFDI 4.0)
-  await page.waitForSelector('#imgFacturar', { timeout: 20000 });
 
-  // 5) Paso final — Uso CFDI + tipo de venta -> GENERAR (timbrado, IRREVERSIBLE).
-  await selectIf(page, '#ddlUsoCfdi', receptor.uso_cfdi || 'G03');  // instrucción Omar: SIEMPRE G03 (gastos grales)
-  await selectIf(page, '#ddlTipoVenta', tipoVenta || 'Otros');       // Motos | Electro | Otros (obligatorio)
-  await page.click('#imgFacturar');                  // Generar Factura
-  await page.waitForLoadState('networkidle').catch(() => {});
+  // ── PASO 2 ── (el portal autollena el receptor por RFC). Fijamos correo + Uso CFDI y generamos.
+  await setValSiVacio(page, 'input[id*="correo" i], input[id*="mail" i], input[type=email]', receptor.email);
+  await setValSiVacio(page, 'input[id*="confirm" i][id*="correo" i], input[id*="confirm" i][id*="mail" i]', receptor.email);
+  await elegirSelect(page, /uso/i, receptor.uso_cfdi || 'G03');
+  await elegirSelect(page, /regim/i, receptor.regimen || '612');
+  await dismiss(page);
 
-  // 6) Descargar PDF + XML y extraer UUID
-  const pdf = await downloadByText(page, ['PDF', 'Descargar PDF']);
-  const xml = await downloadByText(page, ['XML', 'Descargar XML']);
-  const uuid = await extractUuid(page);
-  if (!pdf && !xml && !uuid) return { ok: false, needs_manual: true, motivo: 'revisar_post_generar', portal: PORTAL };
-  return { uuid, pdf, xml };
+  await (clickPorTexto(page, 'Generar') || clickPorTexto(page, 'Facturar') || clickPorTexto(page, 'Continuar') || clickPorTexto(page, 'Enviar'));
+  await page.waitForTimeout(3500);
+  await dismiss(page);
+
+  if (await huboExito(page)) {
+    return { uuid: await uuidDePagina(page), nota: 'CFDI generado en Chedraui (Masteredi); normalmente también llega por correo.' };
+  }
+  const err2 = await textoError(page);
+  return { needs_manual: true, motivo: err2 || 'no_se_genero', form_schema: await snap(page) };
 }
 
-// ---------- helpers ----------
-async function clickIfPresent(page, sel) { const el = await page.$(sel); if (el) { try { await el.click(); } catch {} } }
-async function inputVal(page, sel) { const el = await page.$(sel); return el ? (await el.inputValue().catch(() => '')) : ''; }
-async function fillIf(page, sel, val) { if (!val) return; const el = await page.$(sel); if (el) { try { await el.fill(String(val)); } catch {} } }
-async function selectIf(page, sel, val) { if (!val) return; const el = await page.$(sel); if (el) { try { await el.selectOption(String(val)); } catch {} } }
-async function captchaImage(page) {
-  const el = await page.$('#imgNewCap, img[src*="captcha.aspx"]');
-  if (!el) return null;
-  try { return 'data:image/png;base64,' + (await el.screenshot()).toString('base64'); } catch { return null; }
+// ───────── helpers ─────────
+async function setVal(page, sel, val) {
+  const el = await page.$(sel); if (!el) return false;
+  try { await el.fill(String(val)); return true; } catch { return false; }
 }
-async function downloadByText(page, texts) {
-  for (const t of texts) {
-    const link = await page.$(`a:has-text("${t}"), input[value*="${t}"], button:has-text("${t}")`);
-    if (!link) continue;
+async function setValSiVacio(page, sel, val) {
+  if (!val) return;
+  for (const el of await page.$$(sel)) {
+    const cur = await el.inputValue().catch(() => '');
+    if (!cur || !cur.trim()) { await el.fill(String(val)).catch(() => {}); }
+  }
+}
+async function clickSiExiste(page, sel) {
+  const el = await page.$(sel); if (el) { try { await el.click({ timeout: 5000 }); return true; } catch {} } return false;
+}
+async function clickPorTexto(page, txt) {
+  try {
+    const b = page.getByRole('button', { name: new RegExp(esc(txt), 'i') });
+    if (await b.count()) { await b.first().click({ timeout: 6000 }); return true; }
+  } catch {}
+  const el = await page.$(`input[type=submit][value*="${txt}" i], input[type=button][value*="${txt}" i], a:has-text("${txt}"), button:has-text("${txt}")`).catch(() => null);
+  if (el) { try { await el.click({ timeout: 6000 }); return true; } catch {} }
+  return false;
+}
+async function elegirSelect(page, idRegex, valor) {
+  for (const sel of await page.$$('select')) {
+    const meta = ((await sel.getAttribute('id')) || '') + ' ' + ((await sel.getAttribute('name')) || '');
+    if (!idRegex.test(meta)) continue;
     try {
-      const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), link.click()]);
-      const stream = await dl.createReadStream(); if (!stream) continue;
-      const chunks = []; for await (const c of stream) chunks.push(c);
-      return Buffer.concat(chunks).toString('base64');
-    } catch { /* siguiente */ }
+      const ok = await sel.evaluate((s, v) => {
+        const o = Array.from(s.options).find((o) => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
+        if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; } return false;
+      }, String(valor));
+      if (ok) return true;
+    } catch {}
   }
-  return null;
+  return false;
 }
-async function extractUuid(page) {
-  const html = await page.content();
+async function dismiss(page) {
+  for (let i = 0; i < 4; i++) {
+    const ok = await page.$('#btnClose, button:has-text("Aceptar"), input[value="Aceptar"], button:has-text("Cerrar")');
+    if (!ok) break; try { await ok.click({ timeout: 3000 }); } catch {} await page.waitForTimeout(300);
+  }
+}
+async function huboExito(page) {
+  const html = (await page.content().catch(() => '')) || '';
+  return /(Descargar|Factura generada|comprobante generado|se gener[oó]|Folio Fiscal|UUID|\.xml|\.pdf)/i.test(html);
+}
+async function textoError(page) {
+  const html = (await page.content().catch(() => '')) || '';
+  const m = html.match(/(no (existe|se encontr[oó])[^<.]{0,90}|ticket[^<.]{0,40}(inv[aá]lido|no v[aá]lido|no existe)[^<.]{0,40}|ya (fue|est[aá]) facturad[oa][^<.]{0,60}|c[oó]digo[^<.]{0,30}incorrecto[^<.]{0,30}|captcha[^<.]{0,30}|RFC[^<.]{0,30}(inv[aá]lido|incorrecto)[^<.]{0,30})/i);
+  return m ? m[1].replace(/\s+/g, ' ').trim() : null;
+}
+async function uuidDePagina(page) {
+  const html = (await page.content().catch(() => '')) || '';
   const m = html.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
   return m ? m[0] : null;
 }
+async function snap(page) {
+  try {
+    return await page.evaluate(() => ({
+      titulo: document.title, url: location.href,
+      campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id, name: e.name })).slice(0, 25),
+      botones: Array.from(document.querySelectorAll('input[type=submit],input[type=button],button,a')).map(b => (b.value || b.innerText || '').trim()).filter(Boolean).slice(0, 20),
+    }));
+  } catch { return null; }
+}
+function esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-module.exports = { nombre, matches, matchesComercio, facturar, PORTAL };
+module.exports = { nombre, matches, facturar };
