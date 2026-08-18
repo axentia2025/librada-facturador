@@ -48,51 +48,60 @@ async function facturar(page, { url, ticket, receptor }) {
     return { needs_manual: true, motivo: 'captcha_no_resuelto: ' + (e.message || e), form_schema: await snap(page) };
   }
 
-  // "Continuar" del paso 1 es el ImageButton #imgSiguiente (postback ASP.NET → navega).
-  if (!(await clickSiExiste(page, '#imgSiguiente'))) await clickPorTexto(page, 'Continuar');
-  // Esperar a que la navegación del postback termine ANTES de inspeccionar (si no, el contexto
-  // se destruye a media evaluate). Reintentamos el snapshot si el contexto se cayó.
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await page.waitForTimeout(4000);
-  await dismiss(page);
-  let paso2 = await snap(page);
-  if (!paso2 || !paso2.titulo) { await page.waitForTimeout(3000); paso2 = await snap(page); }  // reintento
-  const dlg1 = page._lastDialog;    // ¿alert tras Continuar? (ej. "ticket no existe")
+  // "Continuar" del paso 1 = ImageButton #imgSiguiente (postback ASP.NET → navega al paso 2).
+  await clickSiExiste(page, '#imgSiguiente');
 
-  // ¿Error del portal en el paso 1? (ticket no existe, ya facturado, captcha mal, RFC inválido)
-  const err1 = await textoError(page);
-  if (err1 && !/correo|e-?mail/i.test(err1)) {
-    return { needs_manual: true, motivo: err1, form_schema: await snap(page) };
+  // ── PASO 2 · "Modificación de Datos del Cliente" ──
+  // Chedraui AUTOLLENA el receptor por el RFC (si el cliente registró sus datos). Esperamos a que
+  // aparezca el campo de correo (señal de que el ticket fue válido y cargó el paso 2).
+  const paso2 = await page.waitForSelector('#txtEmail', { timeout: 25000 }).then(() => true).catch(() => false);
+  if (!paso2) {
+    // No cargó el paso 2 → ticket no encontrado / captcha mal / ya facturado. Reportamos el motivo.
+    const err1 = page._lastDialog || await textoError(page);
+    return { needs_manual: true, motivo: err1 || 'no_avanzo_a_datos (ticket/captcha)', form_schema: await snap(page) };
   }
-
-  // ── PASO 2 ── (el portal autollena el receptor por RFC). Fijamos correo + Uso CFDI y generamos.
-  await setValSiVacio(page, 'input[id*="correo" i], input[id*="mail" i], input[type=email]', receptor.email);
-  await setValSiVacio(page, 'input[id*="confirm" i][id*="correo" i], input[id*="confirm" i][id*="mail" i]', receptor.email);
-  await elegirSelect(page, /uso/i, receptor.uso_cfdi || 'G03');
+  // El CFDI debe llegar a Librada → sobrescribimos el correo (viene pre-lleno con el del cliente).
+  await setVal(page, '#txtEmail', String(receptor.email || '').toLowerCase());
+  await setVal(page, '#txtEmail2', String(receptor.email || '').toLowerCase());
+  // Si el receptor NO estaba registrado (campos vacíos), los llenamos defensivamente.
+  await setValSiVacio(page, '#txtNombre', receptor.nombre);
+  await setValSiVacio(page, '#txtCP', receptor.cp);
   await elegirSelect(page, /regim/i, receptor.regimen || '612');
-  await dismiss(page);
+  await clickSiExiste(page, '#imgAlta');   // "Continuar" del paso 2 → paso 3
 
-  // Generar/timbrar el paso 2 — ImageButtons de ASP.NET (ids probables) + respaldo por texto
-  let genClick = false;
-  for (const id of ['#imgFacturar', '#imgGenerar', '#imgTimbrar', '#imgFinalizar', '#imgSiguiente', '#imgEnviar', '#imgContinuar']) {
-    if (await clickSiExiste(page, id)) { genClick = true; break; }
+  // ── PASO 3 · "Detalle del Ticket de Compra" ──
+  const paso3 = await page.waitForSelector('#ddlTipoVenta', { timeout: 25000 }).then(() => true).catch(() => false);
+  if (!paso3) {
+    const errm = page._lastDialog || await textoError(page);
+    return { needs_manual: true, motivo: errm || 'no_avanzo_a_detalle', form_schema: await snap(page) };
   }
-  if (!genClick) {
-    for (const t of ['Generar', 'Facturar', 'Timbrar', 'Finalizar', 'Continuar', 'Enviar']) {
-      if (await clickPorTexto(page, t)) { genClick = true; break; }
-    }
-  }
-  await page.waitForTimeout(4000);
-  await dismiss(page);
+  await elegirSelectVal(page, '#ddlTipoVenta', 'Otros');            // "La venta corresponde a" (obligatorio; súper = Otros)
+  await elegirSelectVal(page, '#ddlUsoCfdi', receptor.uso_cfdi || 'G03'); // Uso CFDI (siempre G03 · Gastos en general)
+  await clickSiExiste(page, '#imgFacturar');                       // "Generar Factura"
 
-  const urlFinal = safeUrl(page);
-  if (await huboExito(page) || /\.pdf($|\?)/i.test(urlFinal)) {
-    return { uuid: await uuidDePagina(page), url_final: urlFinal, nota: 'CFDI generado en Chedraui (Masteredi); normalmente también llega por correo.' };
+  // ── RESULTADO ── esperar la pantalla "Su factura fue procesada"
+  await page.waitForFunction(
+    () => /su factura fue procesada|gracias por (su|tu) preferencia|Consultar Factura/i.test(document.body.innerText || ''),
+    { timeout: 20000 }
+  ).catch(() => {});
+  await page.waitForTimeout(1500);
+
+  if (await huboExito(page)) {
+    return { uuid: await uuidDePagina(page), nota: 'CFDI de Chedraui generado (Masteredi); enviado al correo indicado → recepción lo archiva en la Bóveda.' };
   }
-  const err2 = page._lastDialog || dlg1 || await textoError(page);
-  return { needs_manual: true, motivo: err2 || 'no_se_genero', url_final: urlFinal, dlg1, paso2, form_schema: await snap(page) };
+  const err2 = page._lastDialog || await textoError(page);
+  return { needs_manual: true, motivo: err2 || 'no_se_genero', form_schema: await snap(page) };
 }
 function safeUrl(page) { try { return page.url(); } catch { return ''; } }
+async function elegirSelectVal(page, sel, val) {
+  const el = await page.$(sel); if (!el) return false;
+  try {
+    return await el.evaluate((s, v) => {
+      const o = Array.from(s.options).find(o => o.value === v || o.text.trim().toUpperCase().startsWith(String(v).toUpperCase()));
+      if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); return true; } return false;
+    }, String(val));
+  } catch { return false; }
+}
 
 // ───────── helpers ─────────
 async function setVal(page, sel, val) {
@@ -147,7 +156,7 @@ async function huboExito(page) {
   // Señales FUERTES en texto visible (no markup): UUID visible o mensaje explícito de éxito.
   const t = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
   if (/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/.test(t)) return true;
-  return /(factura(ci[oó]n)?\s+(generad|exitos|realizad|emitid)|comprobante\s+(generad|emitid)|folio\s+fiscal|CFDI\s+(generad|emitid)|descargar\s+(su|tu)\s+(factura|cfdi))/i.test(t);
+  return /(factura(ci[oó]n)?\s+(generad|exitos|realizad|emitid|procesad)|comprobante\s+(generad|emitid|procesad)|folio\s+fiscal|CFDI\s+(generad|emitid)|gracias por (su|tu) preferencia|descargar\s+(su|tu)\s+(factura|cfdi))/i.test(t);
 }
 async function textoError(page) {
   // TEXTO VISIBLE (no HTML crudo) para no confundir markup con errores reales.
