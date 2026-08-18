@@ -134,8 +134,10 @@ async function dismiss(page) {
   }
 }
 async function huboExito(page) {
-  const html = (await page.content().catch(() => '')) || '';
-  return /(Descargar|Factura generada|comprobante generado|se gener[oó]|Folio Fiscal|UUID|\.xml|\.pdf)/i.test(html);
+  // Señales FUERTES en texto visible (no markup): UUID visible o mensaje explícito de éxito.
+  const t = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+  if (/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/.test(t)) return true;
+  return /(factura(ci[oó]n)?\s+(generad|exitos|realizad|emitid)|comprobante\s+(generad|emitid)|folio\s+fiscal|CFDI\s+(generad|emitid)|descargar\s+(su|tu)\s+(factura|cfdi))/i.test(t);
 }
 async function textoError(page) {
   // TEXTO VISIBLE (no HTML crudo) para no confundir markup con errores reales.
