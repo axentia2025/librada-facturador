@@ -82,7 +82,7 @@ async function facturar(page, { url, ticket, receptor }) {
   if (await huboExito(page)) {
     return { uuid: await uuidDePagina(page), nota: 'CFDI generado en Chedraui (Masteredi); normalmente también llega por correo.' };
   }
-  const err2 = await textoError(page);
+  const err2 = page._lastDialog || await textoError(page);
   return { needs_manual: true, motivo: err2 || 'no_se_genero', form_schema: await snap(page) };
 }
 
@@ -154,13 +154,17 @@ async function uuidDePagina(page) {
 }
 async function snap(page) {
   try {
-    return await page.evaluate(() => ({
+    const s = await page.evaluate(() => ({
       titulo: document.title, url: location.href,
       texto: ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 800),
-      campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id, name: e.name })).slice(0, 30),
+      // texto de spans/labels visibles (ASP.NET suele meter errores en <span> ocultos que se muestran)
+      spans: Array.from(document.querySelectorAll('span,label,td,div')).map(e => (e.innerText || '').trim()).filter(t => t && t.length < 120 && /error|inv[aá]lid|incorrect|no (existe|se encontr|coincide|v[aá]lid)|captcha|ticket|rfc|factur/i.test(t)).slice(0, 12),
+      campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id })).slice(0, 30),
       botones: Array.from(document.querySelectorAll('input[type=image],input[type=submit],input[type=button],button,a[id]')).map(b => ({ id: b.id, txt: (b.value || b.alt || b.innerText || '').trim().slice(0, 20) })).filter(b => b.id || b.txt).slice(0, 20),
     }));
-  } catch { return null; }
+    if (page._lastDialog) s.alert = String(page._lastDialog).slice(0, 200);
+    return s;
+  } catch { return { alert: page._lastDialog ? String(page._lastDialog).slice(0, 200) : null }; }
 }
 function esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 

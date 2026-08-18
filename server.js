@@ -52,6 +52,10 @@ app.post('/facturar', async (req, res) => {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(12000); // cada operación de Playwright se acota (evita esperas de 30s que se acumulan)
+    // Muchos portales ASP.NET muestran validaciones/errores con alert()/confirm() de JS, que
+    // BLOQUEAN a Playwright si no se manejan. Los aceptamos y guardamos el último mensaje.
+    page._lastDialog = null;
+    page.on('dialog', async (d) => { page._lastDialog = d.message(); try { await d.accept(); } catch {} });
 
     // Navegamos primero para RESOLVER redirects (muchos comercios tienen URL vanidosa que
     // redirige a una plataforma compartida, ej. giornale.mx → cfdi40.mifacturacion.mx).
