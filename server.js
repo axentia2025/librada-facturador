@@ -51,7 +51,7 @@ app.post('/facturar', async (req, res) => {
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
     });
     const page = await context.newPage();
-    page.setDefaultTimeout(30000);
+    page.setDefaultTimeout(12000); // cada operación de Playwright se acota (evita esperas de 30s que se acumulan)
 
     // Navegamos primero para RESOLVER redirects (muchos comercios tienen URL vanidosa que
     // redirige a una plataforma compartida, ej. giornale.mx → cfdi40.mifacturacion.mx).
@@ -70,7 +70,12 @@ app.post('/facturar', async (req, res) => {
     const esNuevo = !adapter;
     if (!adapter) adapter = generico;
 
-    const result = await adapter.facturar(page, { url: target, ticket, receptor });
+    // CANDADO DE TIEMPO DURO: ningún portal puede colgar la petición más de 90s.
+    // Si se pasa (página pesada/anti-bot/modales que atoran) → se aborta y se escala limpio.
+    const result = await Promise.race([
+      adapter.facturar(page, { url: target, ticket, receptor }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout_portal_90s')), 90000)),
+    ]);
     const ok = !(result && result.needs_manual);
 
     // ── APRENDER: registrar el resultado en la memoria (crea el host si es nuevo) ──
