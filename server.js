@@ -11,6 +11,26 @@ const express = require('express');
 // tuvieran un problema de carga (evita que un require nativo tumbe el contenedor sin logs).
 const { pickByHost, adapterByName, generico } = require('./adapters');
 const registry = require('./registry');
+const { spawn, spawnSync } = require('child_process');
+
+// ── PANTALLA VIRTUAL (Xvfb) — best-effort, para correr Chromium en modo con-pantalla ──
+// Portales legacy (ASP.NET: Chedraui/Masteredi) NO completan el paso final de generación en
+// headless, pero sí con una pantalla real (aunque sea virtual). Levantamos Xvfb aquí; si no
+// existe o falla, seguimos en headless — el arranque del servicio JAMÁS depende de esto.
+function iniciarPantallaVirtual() {
+  if (process.env.DISPLAY) return true;
+  try {
+    if (spawnSync('which', ['Xvfb']).status !== 0) return false;
+    const x = spawn('Xvfb', [':99', '-screen', '0', '1366x768x24', '-ac', '-nolisten', 'tcp'],
+      { stdio: 'ignore', detached: true });
+    x.unref();
+    process.env.DISPLAY = ':99';
+    spawnSync('sleep', ['2']); // darle un momento a Xvfb para levantar antes del primer launch
+    return true;
+  } catch { return false; }
+}
+const HAY_PANTALLA = iniciarPantallaVirtual();
+console.log('Librada facturador · pantalla virtual (Xvfb):', HAY_PANTALLA ? 'ACTIVA (headed)' : 'no disponible (headless)');
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
@@ -33,16 +53,18 @@ app.post('/facturar', async (req, res) => {
   // MODO SIGILO: algunos portales (Costco y otros grandes retailers) no renderizan el formulario
   // si detectan un navegador automatizado. Lanzamos con args + user-agent reales y ocultamos
   // las señales típicas de automatización (navigator.webdriver, etc.).
-  // MODO CON-PANTALLA (headed) sobre pantalla virtual (xvfb, ver Dockerfile CMD).
-  // Portales legacy (ASP.NET tipo Chedraui/Masteredi) se comportan distinto en headless
-  // y no completan el paso final de generación; con una pantalla real (aunque sea virtual)
-  // se comportan como en un Chrome normal, que es donde SÍ generan. Además reduce
-  // la detección de automatización en retailers grandes.
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage',
-           '--start-maximized', '--disable-gpu'],
-  });
+  // MODO CON-PANTALLA (headed) sobre la pantalla virtual (Xvfb). Portales legacy no completan
+  // el paso final en headless; con pantalla real (aunque virtual) se comportan como Chrome normal.
+  // Si el launch con-pantalla fallara, caemos a headless para no dejar sin servicio a los demás.
+  const ARGS = ['--disable-blink-features=AutomationControlled', '--no-sandbox',
+                '--disable-dev-shm-usage', '--disable-gpu'];
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: !HAY_PANTALLA, args: ARGS });
+  } catch (e) {
+    console.log('launch con-pantalla falló, reintentando headless:', String(e.message || e));
+    browser = await chromium.launch({ headless: true, args: ARGS });
+  }
   let finalHost = '';
   try {
     const context = await browser.newContext({
