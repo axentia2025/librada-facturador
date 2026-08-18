@@ -97,7 +97,12 @@ async function setValSiVacio(page, sel, val) {
   }
 }
 async function clickSiExiste(page, sel) {
-  const el = await page.$(sel); if (el) { try { await el.click({ timeout: 5000 }); return true; } catch {} } return false;
+  const el = await page.$(sel); if (!el) return false;
+  try { await el.click({ timeout: 4000 }); return true; } catch {}
+  // Respaldo: click por JS (ignora overlays/actionability — necesario para ImageButtons ASP.NET
+  // que quedan tapados por el modal, y para disparar el postback de forma confiable).
+  try { await el.evaluate((e) => e.click()); return true; } catch {}
+  return false;
 }
 async function clickPorTexto(page, txt) {
   try {
