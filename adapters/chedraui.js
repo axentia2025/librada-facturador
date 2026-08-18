@@ -167,15 +167,23 @@ async function dismiss(page) {
     if (!clicked) break; await page.waitForTimeout(300);
   }
 }
+// Texto de la página robusto: innerText por evaluate; si falla (headless a media navegación),
+// cae a page.content() sin etiquetas. Así detectamos éxito/errores aunque evaluate truene.
+async function textoPagina(page) {
+  let t = '';
+  try { t = await page.evaluate(() => (document.body && document.body.innerText) || ''); } catch {}
+  if (!t || t.length < 5) {
+    try { t = (await page.content()).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' '); } catch {}
+  }
+  return (t || '').replace(/\s+/g, ' ');
+}
 async function huboExito(page) {
-  // Señales FUERTES en texto visible (no markup): UUID visible o mensaje explícito de éxito.
-  const t = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+  const t = await textoPagina(page);
   if (/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/.test(t)) return true;
   return /(factura(ci[oó]n)?\s+(generad|exitos|realizad|emitid|procesad)|comprobante\s+(generad|emitid|procesad)|folio\s+fiscal|CFDI\s+(generad|emitid)|gracias por (su|tu) preferencia|descargar\s+(su|tu)\s+(factura|cfdi))/i.test(t);
 }
 async function textoError(page) {
-  // TEXTO VISIBLE (no HTML crudo) para no confundir markup con errores reales.
-  const t = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+  const t = await textoPagina(page);
   const m = t.match(/(no (existe|se encontr[oó])[^\n.]{0,80}|ticket[^\n.]{0,40}(inv[aá]lido|no v[aá]lido|no existe)[^\n.]{0,40}|ya (fue|est[aá]) facturad[oa][^\n.]{0,60}|c[oó]digo[^\n.]{0,20}(incorrecto|inv[aá]lido|no coincide)[^\n.]{0,20}|captcha[^\n.]{0,25}(incorrecto|inv[aá]lido|no coincide)[^\n.]{0,25}|RFC[^\n.]{0,25}(inv[aá]lido|incorrecto|no coincide)[^\n.]{0,25})/i);
   return m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 120) : null;
 }
@@ -194,9 +202,12 @@ async function snap(page) {
       campos: Array.from(document.querySelectorAll('input,select')).filter(e => e.type !== 'hidden').map(e => ({ id: e.id })).slice(0, 30),
       botones: Array.from(document.querySelectorAll('input[type=image],input[type=submit],input[type=button],button,a[id]')).map(b => ({ id: b.id, txt: (b.value || b.alt || b.innerText || '').trim().slice(0, 20) })).filter(b => b.id || b.txt).slice(0, 20),
     }));
+    if (!s.texto || s.texto.length < 5) s.texto = (await textoPagina(page)).slice(0, 800); // respaldo por content()
     if (page._lastDialog) s.alert = String(page._lastDialog).slice(0, 200);
     return s;
-  } catch { return { alert: page._lastDialog ? String(page._lastDialog).slice(0, 200) : null }; }
+  } catch {
+    return { alert: page._lastDialog ? String(page._lastDialog).slice(0, 200) : null, texto: (await textoPagina(page)).slice(0, 800) };
+  }
 }
 function esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
