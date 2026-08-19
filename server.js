@@ -9,7 +9,7 @@ const express = require('express');
 // Playwright se carga de forma PEREZOSA dentro de /facturar (no al arrancar).
 // Así el servidor HTTP siempre levanta y responde /health aunque Playwright/Chromium
 // tuvieran un problema de carga (evita que un require nativo tumbe el contenedor sin logs).
-const { pickByHost, adapterByName, generico } = require('./adapters');
+const { pickByHost, pickForTicket, adapterByName, generico } = require('./adapters');
 const registry = require('./registry');
 const { spawn, spawnSync } = require('child_process');
 
@@ -99,6 +99,9 @@ app.post('/facturar', async (req, res) => {
     let adapter = null;
     if (memoria && memoria.tipo === 'adapter' && memoria.adapter) adapter = adapterByName(memoria.adapter);
     if (!adapter) adapter = pickByHost(finalHost);
+    // Si el host no resolvió (URL mal leída por la visión, ej. "chedrawi.com.mx", o vacía),
+    // enrutamos por lo que trae el TICKET: comercio + RFC emisor (mucho más confiable).
+    if (!adapter) adapter = pickForTicket({ url: target, comercio, rfc_emisor: ticket.rfc_emisor });
     const esNuevo = !adapter;
     if (!adapter) adapter = generico;
 

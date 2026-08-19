@@ -16,7 +16,17 @@ const { solveCaptcha } = require('../captcha-solver');
 const nombre = 'chedraui';
 
 function matches(host) {
-  return host.includes('chedraui') || host.includes('masfacturaweb');
+  // 'chedra' tolera errores de OCR de la visión (chedrawi, chedraux, chedrahui…).
+  return host.includes('chedra') || host.includes('masfacturaweb');
+}
+
+// Enrutado por lo que trae el TICKET cuando la URL viene mal leída o vacía.
+// El comercio ("TIENDAS CHEDRAUX S.A. DE C.V.") y el RFC emisor (TCH850701RM1) son
+// mucho más confiables que la URL que extrae la visión.
+function matchesComercio({ comercio, rfc_emisor } = {}) {
+  const c = String(comercio || '').toLowerCase();
+  const r = String(rfc_emisor || '').toUpperCase().replace(/\s+/g, '');
+  return /chedra/.test(c) || r.startsWith('TCH');
 }
 
 async function facturar(page, { url, ticket, receptor }) {
@@ -211,4 +221,4 @@ async function snap(page) {
 }
 function esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-module.exports = { nombre, matches, facturar };
+module.exports = { nombre, matches, matchesComercio, facturar };
